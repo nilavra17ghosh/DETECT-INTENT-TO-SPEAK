@@ -165,6 +165,8 @@ def compute_latency_accuracy(X, y, model, device, fs=256,
         X_sub = X[:, :, start_idx:]   
 
         pad_len = total_samples - n_window_samples
+        # By default, zero-pad on left so the signal reaches model at the correct time.
+        # This is a deliberate design choice.
         X_padded = np.concatenate(
             [np.zeros((X.shape[0], X.shape[1], pad_len)), X_sub], axis=-1
         )
@@ -232,3 +234,55 @@ def plot_latency_analysis(latency_results, title='Detection Latency Analysis',
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
     return fig
+
+def select_threshold(y_true, y_prob):
+    """Find the optimal threshold to maximize balanced accuracy."""
+    best_thresh = 0.5
+    best_bacc = 0.0
+    for thresh in np.linspace(0.1, 0.9, 81):
+        preds = (np.array(y_prob) >= thresh).astype(int)
+        bacc = balanced_accuracy_score(y_true, preds)
+        if bacc > best_bacc:
+            best_bacc = bacc
+            best_thresh = thresh
+    return best_thresh
+
+def print_metrics_table(metrics_dict, title="Metrics Summary"):
+    """Print a formatted table of metrics."""
+    print(f"\n=== {title} ===")
+    print(f"{'Metric':<20} | {'Value':<10}")
+    print("-" * 33)
+    for k, v in metrics_dict.items():
+        print(f"{k.replace('_', ' ').title():<20} | {v:.4f}")
+    print("-" * 33)
+
+def plot_ablation_results(results_dict, metric='balanced_accuracy', save_path=None):
+    """Plot channel ablation results."""
+    channels = [str(k) for k in results_dict.keys()]
+    values = [v[metric] for v in results_dict.values()]
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.bar(channels, values, color='skyblue', edgecolor='black')
+    
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 0.01,
+                f'{val:.3f}', ha='center', va='bottom', fontsize=10)
+        
+    ax.set_ylabel(metric.replace('_', ' ').title(), fontsize=12)
+    ax.set_title(f'Channel Ablation — {metric.replace("_", " ").title()}', fontsize=14, fontweight='bold')
+    ax.set_ylim(0, 1.05)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig
+
+def compute_cross_subject_summary(subject_metrics):
+    """Aggregate LOSO metrics across subjects."""
+    summary = {}
+    metrics_keys = subject_metrics[0].keys()
+    for k in metrics_keys:
+        vals = [subj[k] for subj in subject_metrics]
+        summary[f'{k}_mean'] = np.mean(vals)
+        summary[f'{k}_std'] = np.std(vals)
+    return summary

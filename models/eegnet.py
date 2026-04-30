@@ -97,6 +97,13 @@ class EEGNet(nn.Module):
     def get_num_params(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
+    def predict_proba(self, x):
+        """Helper for sklearn compatibility: returns probability of class 1"""
+        self.eval()
+        with torch.no_grad():
+            logits = self.forward(x)
+            return torch.sigmoid(logits).cpu().numpy()
+
 class TemporalAttention(nn.Module):
     """
     Lightweight temporal self-attention over the feature time-steps produced
@@ -231,6 +238,41 @@ class EEGNetWithAttention(nn.Module):
 
     def get_num_params(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def predict_proba(self, x):
+        """Helper for sklearn compatibility: returns probability of class 1"""
+        self.eval()
+        with torch.no_grad():
+            logits = self.forward(x)
+            return torch.sigmoid(logits).cpu().numpy()
+
+def init_weights(m):
+    """Initialize weights for Conv2d and Linear layers"""
+    if isinstance(m, nn.Conv2d):
+        nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
+    elif isinstance(m, nn.Linear):
+        nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
+
+def build_eegnet(n_channels=4, n_samples=128, use_attention=False):
+    """
+    Factory function to build and initialize EEGNet.
+    
+    Args:
+        n_channels: Number of EEG channels
+        n_samples: Number of time samples
+        use_attention: Whether to use the EEGNetWithAttention variant
+    """
+    if use_attention:
+        model = EEGNetWithAttention(n_channels=n_channels, n_samples=n_samples)
+    else:
+        model = EEGNet(n_channels=n_channels, n_samples=n_samples)
+    
+    model.apply(init_weights)
+    return model
 
 if __name__ == "__main__":
     print("=== EEGNet (primary) ===")

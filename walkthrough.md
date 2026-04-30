@@ -134,3 +134,20 @@
 - ✅ `architecture_diagram.md` created with full interview-ready content
 - ✅ `explanation.txt` updated with new models, analyses, file tree
 - ✅ `utils/__init__.py` exports all new utilities
+
+---
+
+## Final Strategy Improvements (Realism-Focused)
+
+### Added Justifications
+*   **Performance**: Explicit explanation for moderate accuracy due to EEG signal constraints (low SNR, few electrodes, short window).
+*   **Model Selection**: Transformers formally rejected for this regime with clear technical reasoning (overfitting risk, lack of spatial structure).
+*   **Data Usage**: Clarified that high-density data is used for research but the system is restricted to 2–4 channels for realistic deployment.
+
+### Evaluation Improvements
+*   **Rigorous CV**: Reinforced block-wise CV and LOSO validation to avoid session-drift and trial-level leakage.
+*   **Honest Reporting**: Explicit statement against inflated accuracy (>90%) to demonstrate professional integrity.
+
+### Reporting Improvements
+*   **Limitations Section**: Added a clear list of current system limitations (SNR, subject variance, calibration needs).
+*   **Realism vs Performance**: Added a dedicated section in the architecture diagram comparing idealized lab results vs. realistic deployment.

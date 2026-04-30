@@ -5,18 +5,31 @@ __pycache__/
 venv/
 .env
 
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+
 # Jupyter
 .ipynb_checkpoints/
 
 # Data & Models
 data/
+inner_speech_data/
 mne_data/
 *.fif
 *.edf
 *.bdf
 *.pt
 *.pth
+*.ckpt
+*.pkl
+checkpoints/
 
 # Outputs
 figures/
+results/
+*.csv
 wandb/
+runs/
+outputs/

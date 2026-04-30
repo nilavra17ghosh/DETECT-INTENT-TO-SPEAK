@@ -45,6 +45,8 @@ Raw EEG (BioSemi 128ch / OpenBCI 4ch)
           │
           ▼
      Sigmoid → Binary Decision (Intent=1 / No-Intent=0)
+
+> **Note on Model Selection:** Transformers (EEG-Conformer) were evaluated but not used due to overfitting risk in low-channel, low-data settings.
 ```
 
 ---
@@ -190,6 +192,8 @@ Input: (B, 1, 4, 128)
 | Cross-subject, LOSO, no fine-tune | 58–64% | 0.62–0.68 | Zero-shot |
 | Cross-subject + 30-trial calibration | 64–70% | 0.69–0.74 | Fine-tuned |
 
+**Note:** Accuracy may appear lower than typical EEG classification benchmarks; however, this is due to strict constraints (2–4 electrodes and −500 ms window). These results reflect realistic deployment conditions rather than idealised lab settings.
+
 > ⚠️ **If you see >90% accuracy on real data** → audit for leakage.
 > This is an honest, deployable system — not an overfit demo.
 
@@ -303,3 +307,17 @@ DETECT-INTENT-TO-SPEAK/
 │   └── metrics.py                   Metrics, plots, latency analysis
 └── figures/                         Generated plots
 ```
+
+---
+
+## ⚠️ Realism vs Accuracy
+
+*   **High accuracy (>90%) in EEG intent detection is usually due to:**
+    *   Data leakage
+    *   EMG contamination
+    *   Improper train/test splits
+
+*   **This system prioritises:**
+    *   Realistic constraints
+    *   Deployability
+    *   Honest evaluation

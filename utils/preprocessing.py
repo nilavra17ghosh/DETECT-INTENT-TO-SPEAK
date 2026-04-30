@@ -28,8 +28,20 @@ from scipy import signal
 from scipy.signal import butter, filtfilt, iirnotch, welch
 
 SELECTED_CHANNELS = ['FCz', 'Cz', 'C3', 'F7']       
-SELECTED_CHANNELS_PHYSIONET = ['FC3', 'Cz', 'C3', 'F3']  
+SELECTED_CHANNELS_PHYSIONET = ['C3', 'Cz', 'C4', 'FCz']  
 SELECTED_CHANNELS_2CH = ['FCz', 'C3']
+BIOSEMI128_TO_STANDARD = {
+    'C23': 'FCz',
+    'A1': 'Cz',
+    'D19': 'C3',
+    'D7': 'F7',
+    'D12': 'FC3',
+    'B22': 'C4',
+    'C1': 'FCz',
+    'B1': 'Cz'
+}
+SELECTED_CHANNELS_INNER_SPEECH = ['C23', 'A1', 'D19', 'D7'] # Corresponds to FCz, Cz, C3, F7
+
 ORIGINAL_SFREQ = 1024   
 TARGET_SFREQ = 256       
 EPOCH_DURATION = 0.5     
@@ -237,6 +249,15 @@ def augment_time_shift(x, max_shift=13):
     shift = np.random.randint(-max_shift, max_shift + 1)
     return np.roll(x, shift, axis=-1)
 
+
+def augment_gaussian_noise(x, noise_level=0.05):
+    """
+    Add mild Gaussian noise for real EEG augmentation.
+    Use instead of circular time-shift to avoid boundary artifacts.
+    """
+    noise = np.random.randn(*x.shape) * noise_level
+    return x + noise
+
 def extract_svm_features(X, fs=256):
     """
     Extract per-channel features for the SVM baseline.
@@ -326,27 +347,22 @@ def create_epochs(continuous_data, event_indices, epoch_samples=128, fs=256):
             epochs.append(epoch)
     return np.array(epochs) if epochs else np.empty((0, continuous_data.shape[0], epoch_samples))
 
-def load_inner_speech_dataset(data_dir, subjects=None, selected_channels=None):
+def load_inner_speech_dataset(data_dir, subjects=None, selected_channels=None, load_overt_only=False):
     """
-    Load overt-speech EEG from the Inner Speech Dataset via MNE-Python.
-
-    Requires: pip install mne
-    Download: openneuro-py download --dataset=ds003626 <data_dir>
-
-    Args:
-        data_dir (str): Path to the ds003626 BIDS directory.
-        subjects (list[str] or None): e.g. ['sub-01','sub-02']. None = all 10.
-        selected_channels (list[str] or None): Default SELECTED_CHANNELS.
-
-    Returns:
-        dict with keys 'X', 'y', 'subjects', 'channels', 'blocks', 'fs', etc.
+    Load overt/inner speech EEG from the Inner Speech Dataset via MNE-Python.
+    
+    Data is stored in BioSemi128 format. Event markers are in the 'Status' channel.
+    Event codes:
+      31-34: Cue onset
+      44: Action interval start (speech production begins) - positive class anchor
+      45: Relax interval start - negative class anchor
     """
     import mne
     import os
     import glob
 
     if selected_channels is None:
-        selected_channels = SELECTED_CHANNELS
+        selected_channels = SELECTED_CHANNELS_INNER_SPEECH
 
     if subjects is None:
         subjects = [f'sub-{i+1:02d}' for i in range(10)]
@@ -357,80 +373,76 @@ def load_inner_speech_dataset(data_dir, subjects=None, selected_channels=None):
         bdf_pattern = os.path.join(data_dir, subj, 'ses-*', 'eeg', '*.bdf')
         bdf_files = sorted(glob.glob(bdf_pattern))
         if not bdf_files:
-            print(f"  ⚠ No BDF files found for {subj}, skipping")
             continue
 
         subj_epochs_intent, subj_epochs_rest = [], []
-        subj_baselines = []
         block_idx = 0
 
         for bdf_path in bdf_files:
-            raw = mne.io.read_raw_bdf(bdf_path, preload=True, verbose=False)
+            try:
+                raw = mne.io.read_raw_bdf(bdf_path, preload=True, stim_channel='Status', verbose=False)
+            except Exception:
+                continue
 
             avail = [ch for ch in selected_channels if ch in raw.ch_names]
-            if len(avail) < 2:
-                print(f"  ⚠ {bdf_path}: only {len(avail)} of {len(selected_channels)} channels found, skipping")
+            if len(avail) < len(selected_channels):
                 continue
-            raw.pick_channels(avail)
+            
+            # Find events BEFORE picking channels (which removes 'Status')
+            try:
+                events = mne.find_events(raw, stim_channel='Status', verbose=False, min_duration=0.001)
+            except Exception:
+                continue
+
+            raw.pick(avail) # Use pick instead of pick_channels
+
+            # Rename channels to standard 10-20 names
+            rename_dict = {ch: BIOSEMI128_TO_STANDARD.get(ch, ch) for ch in avail}
+            raw.rename_channels(rename_dict)
 
             raw.filter(0.1, 40.0, method='iir', iir_params=dict(order=4, ftype='butter'), verbose=False)
             raw.notch_filter(50.0, verbose=False)
             if raw.info['sfreq'] != TARGET_SFREQ:
                 raw.resample(TARGET_SFREQ, verbose=False)
 
-            try:
-                events, event_id = mne.events_from_annotations(raw, verbose=False)
-            except Exception:
-                continue
-
-            overt_ids = [v for k, v in event_id.items()
-                         if 'overt' in k.lower() or 'spoken' in k.lower() or 'speech' in k.lower()]
-            if not overt_ids:
-                
-                overt_ids = list(event_id.values())
-
             data = raw.get_data()  
             fs = int(raw.info['sfreq'])
             ep_samples = int(fs * EPOCH_DURATION)
-            bl_start_offset = int(fs * 1.5)   
-            bl_end_offset   = int(fs * 1.0)   
 
-            for ev in events:
-                if ev[2] not in overt_ids:
-                    continue
-                onset = ev[0]
-
-                start = onset - ep_samples
-                end   = onset
-                if start < 0 or end > data.shape[1]:
-                    continue
-
-                epoch = data[:, start:end]
-
-                bl_s = onset - bl_start_offset
-                bl_e = onset - bl_end_offset
-                if bl_s >= 0 and bl_e <= data.shape[1] and bl_e > bl_s:
-                    bl_epoch = data[:, bl_s:bl_e]
-                else:
-                    bl_epoch = None
-
-                epoch = baseline_correct(epoch, bl_epoch)
-                subj_epochs_intent.append(epoch)
-
-                rest_start = onset + int(fs * 1.0)
-                rest_end   = rest_start + ep_samples
-                if rest_end <= data.shape[1]:
-                    rest_epoch = data[:, rest_start:rest_end]
-                    rest_epoch = baseline_correct(rest_epoch)  
-                    subj_epochs_rest.append(rest_epoch)
+            # Extract Intent (before code 44) and Rest (after code 45)
+            # Find pairs of 44 and 45 to ensure valid trials
+            for i, ev in enumerate(events):
+                if ev[2] == 44:  # Action onset
+                    onset = ev[0]
+                    start = onset - ep_samples
+                    end = onset
+                    if start >= 0 and end <= data.shape[1]:
+                        epoch = data[:, start:end]
+                        # Baseline correct using early part of the epoch or a fixed baseline
+                        n_bl = max(1, int(0.1 * TARGET_SFREQ))
+                        bl_mean = epoch[:, :n_bl].mean(axis=-1, keepdims=True)
+                        epoch = epoch - bl_mean
+                        subj_epochs_intent.append(epoch)
+                        
+                elif ev[2] == 45:  # Relax onset
+                    onset = ev[0]
+                    start = onset
+                    end = onset + ep_samples
+                    if end <= data.shape[1]:
+                        rest_epoch = data[:, start:end]
+                        n_bl = max(1, int(0.1 * TARGET_SFREQ))
+                        bl_mean = rest_epoch[:, :n_bl].mean(axis=-1, keepdims=True)
+                        rest_epoch = rest_epoch - bl_mean
+                        subj_epochs_rest.append(rest_epoch)
 
             block_idx += 1
 
         if not subj_epochs_intent:
-            print(f"  ⚠ No valid epochs for {subj}")
             continue
 
         n_min = min(len(subj_epochs_intent), len(subj_epochs_rest))
+        if n_min == 0: continue
+        
         intent_arr = np.array(subj_epochs_intent[:n_min])
         rest_arr   = np.array(subj_epochs_rest[:n_min])
 
@@ -438,8 +450,8 @@ def load_inner_speech_dataset(data_dir, subjects=None, selected_channels=None):
         y_subj = np.concatenate([np.ones(n_min, dtype=int), np.zeros(n_min, dtype=int)])
 
         n_total = len(y_subj)
-        block_tags = np.repeat(np.arange(N_BLOCKS_PER_SUBJECT),
-                               int(np.ceil(n_total / N_BLOCKS_PER_SUBJECT)))[:n_total]
+        block_tags = np.repeat(np.arange(max(1, block_idx)),
+                               int(np.ceil(n_total / max(1, block_idx))))[:n_total]
 
         all_X.append(X_subj)
         all_y.append(y_subj)
@@ -450,7 +462,7 @@ def load_inner_speech_dataset(data_dir, subjects=None, selected_channels=None):
         'y': all_y,
         'blocks': all_blocks,
         'subjects': subjects[:len(all_X)],
-        'channels': selected_channels,
+        'channels': [BIOSEMI128_TO_STANDARD.get(ch, ch) for ch in selected_channels],
         'fs': TARGET_SFREQ,
         'n_samples': EPOCH_SAMPLES,
         'epoch_duration': EPOCH_DURATION,
@@ -458,7 +470,7 @@ def load_inner_speech_dataset(data_dir, subjects=None, selected_channels=None):
     }
 
 def load_physionet_dataset(subjects=None, selected_channels=None,
-                           runs=None, tmin=-0.5, tmax=0.0):
+                           runs=None, tmin=0.0, tmax=2.0, lowcut=8.0, highcut=30.0):
     """
     Load the PhysioNet EEG Motor Movement/Imagery dataset via MNE.
 
@@ -487,7 +499,7 @@ def load_physionet_dataset(subjects=None, selected_channels=None,
         selected_channels (list[str] or None): 4 channels to keep.
             Default: SELECTED_CHANNELS_PHYSIONET = ['FC3','Cz','C3','F3'].
             FC3 ≈ FCz (pre-SMA), Cz (SMA), C3 (left motor), F3 ≈ F7 (IFG).
-        runs (list[int] or None): Runs to load. Default: [6, 10, 14].
+        runs (list[int] or None): Runs to load. Default: [4, 8, 12].
         tmin (float): Epoch start in seconds relative to event. Default: -0.5.
         tmax (float): Epoch end in seconds relative to event. Default: 0.0.
 
@@ -508,9 +520,10 @@ def load_physionet_dataset(subjects=None, selected_channels=None,
     if selected_channels is None:
         selected_channels = SELECTED_CHANNELS_PHYSIONET
     if runs is None:
-        runs = [6, 10, 14]   
+        runs = [4, 8, 12]   
 
     epoch_duration = abs(tmax - tmin)
+    epoch_samples = int(epoch_duration * TARGET_SFREQ)
 
     all_X, all_y, all_blocks = [], [], []
     valid_subjects = []
@@ -549,7 +562,7 @@ def load_physionet_dataset(subjects=None, selected_channels=None,
                 continue
             raw.pick_channels(avail)
 
-            raw.filter(0.1, 40.0, method='iir',
+            raw.filter(lowcut, highcut, method='iir',
                        iir_params=dict(order=4, ftype='butter'), verbose=False)
             if raw.info['sfreq'] != TARGET_SFREQ:
                 raw.resample(TARGET_SFREQ, verbose=False)
@@ -574,10 +587,11 @@ def load_physionet_dataset(subjects=None, selected_channels=None,
             combined_id = {**intent_id, **rest_id}
 
             try:
+                # Load with a pre-cue period for baseline correction
                 epochs_mne = mne.Epochs(
                     raw, events, event_id=combined_id,
-                    tmin=tmin, tmax=tmax - 1.0/TARGET_SFREQ,
-                    baseline=None, preload=True, verbose=False
+                    tmin=-0.5, tmax=tmax - 1.0/TARGET_SFREQ,
+                    baseline=(None, 0), preload=True, verbose=False
                 )
                 
                 data = epochs_mne.get_data()   
@@ -587,16 +601,40 @@ def load_physionet_dataset(subjects=None, selected_channels=None,
                 labels = np.array([1 if lv in intent_vals else 0
                                    for lv in labels_raw])
 
-                n_t = data.shape[-1]
-                if n_t >= EPOCH_SAMPLES:
-                    data = data[:, :, :EPOCH_SAMPLES]
+                # Slice the data to [tmin, tmax] window
+                start_idx = int((tmin - (-0.5)) * TARGET_SFREQ)
+                data = data[:, :, start_idx:]
+
+                # Balance classes (1:1 ratio) to prevent majority class prediction
+                idx_intent = np.where(labels == 1)[0]
+                idx_rest = np.where(labels == 0)[0]
+                min_len = min(len(idx_intent), len(idx_rest))
+                
+                if min_len > 0:
+                    np.random.seed(42) # For reproducibility
+                    np.random.shuffle(idx_intent)
+                    np.random.shuffle(idx_rest)
+                    idx_intent = idx_intent[:min_len]
+                    idx_rest = idx_rest[:min_len]
+                    
+                    balanced_idx = np.concatenate([idx_intent, idx_rest])
+                    np.random.shuffle(balanced_idx)
+                    
+                    data = data[balanced_idx]
+                    labels = labels[balanced_idx]
                 else:
-                    pad = EPOCH_SAMPLES - n_t
+                    continue
+
+                n_t = data.shape[-1]
+                if n_t >= epoch_samples:
+                    data = data[:, :, :epoch_samples]
+                else:
+                    pad = epoch_samples - n_t
                     data = np.pad(data, ((0,0),(0,0),(0,pad)))
 
                 n_ch = data.shape[1]
                 if n_ch < 4:
-                    pad_ch = np.zeros((data.shape[0], 4 - n_ch, EPOCH_SAMPLES))
+                    pad_ch = np.zeros((data.shape[0], 4 - n_ch, epoch_samples))
                     data = np.concatenate([data, pad_ch], axis=1)
 
                 block_tags = np.full(len(labels), block_idx, dtype=int)
@@ -637,7 +675,7 @@ def load_physionet_dataset(subjects=None, selected_channels=None,
         'subjects': [f'sub-{s:02d}' for s in valid_subjects],
         'channels': ch_names,
         'fs': TARGET_SFREQ,
-        'n_samples': EPOCH_SAMPLES,
+        'n_samples': epoch_samples,
         'epoch_duration': epoch_duration,
         'data_mode': 'real',
         'dataset': 'PhysioNet-EEGBCI',

@@ -38,11 +38,12 @@ class EEGDataset(Dataset):
     Augmentation (time-shift) is applied ONLINE during training only.
     Validation / test datasets must set ``training=False``.
     """
-    def __init__(self, X, y, training=False, time_shift=13):
+    def __init__(self, X, y, training=False, time_shift=13, real_eeg=False):
         self.X = torch.FloatTensor(X)
         self.y = torch.FloatTensor(y)   
         self.training = training
         self.time_shift = time_shift
+        self.real_eeg = real_eeg
 
     def __len__(self):
         return len(self.y)
@@ -51,15 +52,21 @@ class EEGDataset(Dataset):
         x = self.X[idx].clone()
         y = self.y[idx]
 
-        if self.training and self.time_shift > 0:
-            
-            shift = torch.randint(-self.time_shift, self.time_shift + 1, (1,)).item()
-            x = torch.roll(x, shifts=shift, dims=-1)
+        if self.training:
+            if self.real_eeg:
+                # Add mild gaussian noise instead of circular shift for real EEG
+                noise = torch.randn_like(x) * 0.05
+                x = x + noise
+            elif self.time_shift > 0:
+                shift = torch.randint(-self.time_shift, self.time_shift + 1, (1,)).item()
+                x = torch.roll(x, shifts=shift, dims=-1)
 
         return x, y
 
+from torch.utils.data import WeightedRandomSampler
+
 def create_dataloaders(X_train, y_train, X_val, y_val,
-                       batch_size=64, time_shift=13):
+                       batch_size=64, time_shift=13, real_eeg=False, use_sampler=True):
     """
     Create train/val DataLoaders with leak-free z-score normalisation.
 
@@ -68,11 +75,18 @@ def create_dataloaders(X_train, y_train, X_val, y_val,
     X_train_n, stats = zscore_normalize(X_train, fit_stats=None)
     X_val_n, _       = zscore_normalize(X_val,   fit_stats=stats)
 
-    train_ds = EEGDataset(X_train_n, y_train, training=True,  time_shift=time_shift)
-    val_ds   = EEGDataset(X_val_n,   y_val,   training=False, time_shift=0)
+    train_ds = EEGDataset(X_train_n, y_train, training=True,  time_shift=time_shift, real_eeg=real_eeg)
+    val_ds   = EEGDataset(X_val_n,   y_val,   training=False, time_shift=0, real_eeg=real_eeg)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              drop_last=True, num_workers=0)
+    if use_sampler:
+        class_sample_count = np.array([len(np.where(y_train == t)[0]) for t in np.unique(y_train)])
+        weight = 1. / class_sample_count
+        samples_weight = np.array([weight[int(t)] for t in y_train])
+        samples_weight = torch.from_numpy(samples_weight).double()
+        sampler = WeightedRandomSampler(samples_weight, len(samples_weight))
+        train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=sampler, drop_last=True, num_workers=0)
+    else:
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
                               num_workers=0)
     return train_loader, val_loader
@@ -114,6 +128,11 @@ def create_blockwise_kfold_splits(X, y, blocks, n_splits=5, seed=42):
     for fold_blocks in fold_assignments:
         val_mask   = np.isin(blocks, fold_blocks)
         train_mask = ~val_mask
+        
+        # Ensure both classes are present in training fold
+        if len(np.unique(y[train_mask])) < 2:
+            continue
+            
         yield (X[train_mask], y[train_mask],
                X[val_mask],   y[val_mask])
 
@@ -126,18 +145,11 @@ def create_loso_splits(X_all, y_all, n_subjects):
       - list of per-subject arrays (possibly different lengths)
     """
     for test_subj in range(n_subjects):
-        if isinstance(X_all, list):
-            X_test = X_all[test_subj]
-            y_test = y_all[test_subj]
-            train_s = [s for s in range(n_subjects) if s != test_subj]
-            X_train = np.concatenate([X_all[s] for s in train_s], axis=0)
-            y_train = np.concatenate([y_all[s] for s in train_s], axis=0)
-        else:
-            X_test = X_all[test_subj]
-            y_test = y_all[test_subj]
-            train_s = [s for s in range(n_subjects) if s != test_subj]
-            X_train = np.concatenate([X_all[s] for s in train_s], axis=0)
-            y_train = np.concatenate([y_all[s] for s in train_s], axis=0)
+        X_test = X_all[test_subj]
+        y_test = y_all[test_subj]
+        train_s = [s for s in range(n_subjects) if s != test_subj]
+        X_train = np.concatenate([X_all[s] for s in train_s], axis=0)
+        y_train = np.concatenate([y_all[s] for s in train_s], axis=0)
         yield X_train, y_train, X_test, y_test, test_subj
 
 def create_finetune_split(X_test, y_test, n_calibration=30, seed=42):

@@ -25,6 +25,8 @@ Dataset: Inner Speech Dataset (Nieto et al. 2022), OpenNeuro ds003626.
    Overt speech condition: directional words (up/down/left/right).
    ~100 trials per condition per subject.
 
+Although the dataset provides high-density EEG (e.g., 128 channels), we restrict the model to 2–4 electrodes to simulate deployable wearable EEG systems. High-density data is used only for analysis and channel selection, not for final model input.
+
 Data modes in the code:
    --data-mode real      → loads BDF files via MNE-Python (DEFAULT)
    --data-mode synthetic → pipeline smoke-test only; all outputs prefixed
@@ -109,6 +111,8 @@ Models (final selection):
     - Consistently the hardest-to-beat baseline on low-channel BCI
     - Shows you understand classical methods, not just deep learning
 
+    If the deep learning model does not outperform the Riemannian baseline, it indicates potential overfitting or insufficient data, as Riemannian methods are known to be strong in low-channel EEG settings.
+
   ShallowConvNet (~7,561 params)  [SECONDARY BASELINE]
     - log(AvgPool(x²)) band-power features
     - Single logit output → BCEWithLogitsLoss
@@ -118,6 +122,8 @@ Models (final selection):
     - ~60,000 params with ~500 trials and 4 channels = severe overfitting
     - No spatial structure for self-attention to exploit
     - Interview answer embedded in file docstring
+
+    Full Transformer-based architectures were considered but rejected as primary models due to the low-channel (2–4 electrodes) and low-data regime (~500 trials per subject), where self-attention lacks meaningful spatial structure and tends to overfit.
 
 6. TRAINING & LOSS
 ================================================================================
@@ -148,8 +154,10 @@ CV Strategy (CHANGED):
 Optimiser: AdamW (lr=1e-3, wd=1e-4), CosineAnnealingLR, early stopping
    (patience=15), gradient clipping (max_norm=1.0).
 
-7. EXPECTED PERFORMANCE
-================================================================================
+
+The reported accuracy may appear modest compared to general EEG classification tasks; however, this is expected due to the strict constraints of the problem: only 2–4 electrodes, a short −500 ms pre-speech window, and the low signal-to-noise ratio of the Bereitschaftspotential. Therefore, we prioritise realistic evaluation (block-wise CV and LOSO) over inflated performance.
+
+We deliberately avoid reporting inflated accuracy (>90%), as such results typically indicate data leakage, EMG contamination, or improper validation in EEG pipelines.
 
   Scenario                              | Bal. Acc   | AUC-ROC
   --------------------------------------|------------|--------
@@ -167,7 +175,17 @@ LEAKAGE AUDIT: If within-subject AUC > 0.90 on REAL data, investigate:
 If pipeline produces AUC > 0.90 on SYNTHETIC data, that is the synthetic-
 data circularity, not real performance.  The notebook prints a warning.
 
-8. EXTRA EDGE ANALYSES
+8. LIMITATIONS
+================================================================================
+
+Limitations:
+* EEG signals have low signal-to-noise ratio
+* Bereitschaftspotential is subtle and varies across subjects
+* Only 500 ms pre-speech window limits available information
+* Cross-subject generalisation is inherently difficult
+* Requires small calibration (20–30 trials) for deployment
+
+9. EXTRA EDGE ANALYSES
 ================================================================================
 
   Channel Ablation Study (Section 8 in notebook):
@@ -190,7 +208,7 @@ data circularity, not real performance.  The notebook prints a warning.
     Expected gain: +6–8 pp balanced accuracy.
     Interview: 'Quick 30-trial calibration makes the system deployable.'
 
-8. CODE STRUCTURE
+10. CODE STRUCTURE
 ================================================================================
 
 DETECT-INTENT-TO-SPEAK/
@@ -215,7 +233,7 @@ DETECT-INTENT-TO-SPEAK/
 │   └── metrics.py                    Metrics, plots, latency analysis [NEW]
 └── figures/                          Generated plots
 
-9. HOW TO RUN
+11. HOW TO RUN
 ================================================================================
 
   pip install torch numpy scipy scikit-learn matplotlib seaborn wandb pyriemann
