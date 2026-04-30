@@ -1,6 +1,5 @@
 ================================================================================
-              EXPLANATION: Detecting Intent-to-Speak from EEG
-                          (Revised — All Fixes Applied)
+                     EXPLANATION: Detecting Intent-to-Speak from EEG
 ================================================================================
 
 1. PROBLEM SETUP
@@ -9,162 +8,146 @@
 Task: Binary classification — Intent (1) vs No-Intent (0).
 Window: −500 ms to 0 ms relative to speech onset.
 
-Positive samples: 500 ms pre-speech window, baseline-corrected against
-   the −1500 to −1000 ms interval (captures Bereitschaftspotential as
-   deviation from baseline, not absolute voltage).
-Negative samples: matched rest-period windows (≥1 s from any speech event),
-   self-baseline-corrected using the first 100 ms of the epoch.
+Positive samples:
+   - Real data: 500 ms window immediately before action onset (event 44).
+   - Baseline correction uses the first 100 ms of the epoch (code behavior).
 
-Ground truth: event markers from experimental paradigm.
+Negative samples:
+   - Real data: 500 ms rest window immediately after relax onset (event 45).
+   - Baseline correction uses the first 100 ms of the epoch (code behavior).
+
+Ground truth:
+   - Inner Speech Dataset (ds003626): event markers in the Status channel.
+      Event 44 = action onset, Event 45 = relax onset.
+   - PhysioNet EEGBCI: cue-locked motor imagery events; used as a proxy task.
 
 2. DATA COLLECTION PLAN
 ================================================================================
 
-Dataset: Inner Speech Dataset (Nieto et al. 2022), OpenNeuro ds003626.
-   10 subjects, 128-ch BioSemi ActiveTwo, 1024 Hz.
-   Overt speech condition: directional words (up/down/left/right).
-   ~100 trials per condition per subject.
+Datasets used in the repo:
+   A. Inner Speech Dataset (OpenNeuro ds003626):
+       - 10 subjects, 128-channel BioSemi ActiveTwo, 1024 Hz.
+       - Overt/inner speech tasks with event markers in Status channel.
+       - Used as the primary real dataset for intent-to-speak.
 
-Although the dataset provides high-density EEG (e.g., 128 channels), we restrict the model to 2–4 electrodes to simulate deployable wearable EEG systems. High-density data is used only for analysis and channel selection, not for final model input.
+   B. PhysioNet EEGBCI (motor imagery):
+       - 1–109 subjects available; typical usage 5 subjects for quick runs.
+       - Used as a proxy task for motor preparation (Bereitschaftspotential).
+       - Faster to download and run; not true speech, but same SMA/pre-SMA
+          readiness mechanism.
 
-Data modes in the code:
-   --data-mode real      → loads BDF files via MNE-Python (DEFAULT)
-   --data-mode synthetic → pipeline smoke-test only; all outputs prefixed
-                           with "[SIMULATION — NOT REAL EEG]"
+   C. Synthetic data:
+       - Smoke-test only; outputs marked with [SIMULATION — NOT REAL EEG].
+       - Includes BP-like ramps, drift, eye-blinks, and EMG bursts.
 
-The synthetic generator now includes:
-   - ~30% of negative trials get a subtle BP (covert rehearsal simulation)
-   - ~15% of trials get eye-blink artifacts (200–300 µV, frontal channels)
-   - Slow electrode drift (<0.1 Hz) varies across 8 session blocks
-   - ~10% of trials get EMG bursts (broadband noise)
+Number of subjects / trials:
+   - Inner Speech: number of subjects depends on available sub-XX folders.
+      The loader balances intent and rest trials per subject.
+   - PhysioNet: number of subjects is user-selected in the notebook.
+
+Suitability:
+   - Inner Speech is closest to the target task (speech action onset).
+   - PhysioNet provides a validated proxy when storage/time is limited.
 
 3. HARDWARE & ELECTRODE CHOICE
 ================================================================================
 
-Device: OpenBCI Cyton (4-ch, 250 Hz, 24-bit, ~$200 USD)
-Research: BioSemi ActiveTwo, downsampled 1024→256 Hz.
+Deployment assumption:
+   - 4-channel wearable EEG (e.g., OpenBCI Cyton) at 250–256 Hz.
+   - Research-grade BioSemi data are downsampled to 256 Hz.
 
-Selected channels (changed from FC5/FC6/C3/Cz):
+Selected electrodes (2–4):
+   FCz (pre-SMA), Cz (SMA), C3 (left M1 mouth), F7 (left IFG/Broca).
 
-  Electrode  | Region              | Justification
-  -----------|---------------------|------------------------------------------
-  FCz        | Pre-SMA / SMA       | Early Bereitschaftspotential generator
-  Cz         | SMA / midline M1    | Late BP, NS' (negative slope) phase
-  C3         | Left M1 mouth area  | Mu/beta ERD over articulator cortex
-  F7         | Left IFG / Broca's  | Phonological & articulatory planning
+Justification:
+   - FCz/Cz capture early and late Bereitschaftspotential components.
+   - C3 captures motor preparation ERD for articulation.
+   - F7 approximates left IFG for phonological planning.
 
 2-channel fallback: FCz + C3.
-
-Why the change: FC5 is more anterior-lateral than Broca's area. F7 is the
-standard 10-20 site overlying the left inferior frontal gyrus (BA 44/45).
-FCz better captures the pre-SMA generator of the early BP than the
-previous FC5/FC6 pair.
 
 4. PREPROCESSING
 ================================================================================
 
-Pipeline: Bandpass → Notch → Downsample → Baseline Correct → Artifact Reject
+Pipeline for inner speech (real data):
+  1. Bandpass 0.1–40 Hz (preserve slow BP, remove DC and high-frequency noise)
+  2. Notch 50 Hz (power line removal)
+  3. Downsample 1024 → 256 Hz
+  4. Epoch extraction: −500 ms to 0 ms relative to action onset (event 44)
+  5. Baseline correction: first 100 ms of the epoch (code behavior)
+  6. Artifact rejection: ±100 µV threshold (called in notebooks)
+  7. Z-score: fit on train split only, apply to val/test (no leakage)
 
-Bandpass: 0.1–40 Hz (was 0.5–45 Hz)
-   WHY CHANGED: The BP is primarily a sub-1 Hz signal. A 0.5 Hz high-pass
-   with 4th-order Butterworth attenuates exactly the band we are detecting.
-   0.1 Hz preserves the slow cortical potential while still removing DC.
-   Upper cutoff changed from 45 to 40 Hz (standard for ERP analysis).
+Pipeline for PhysioNet (proxy dataset):
+   - Bandpass 8-30 Hz to isolate mu/beta for motor imagery.
+   - Cue-locked epochs from MNE with a fixed pre-cue baseline.
+   - Notebook default: tmin=0.0, tmax=0.5 (cue to 500 ms post-cue).
+      For strict assignment alignment, set tmin=-0.5 and tmax=0.0.
 
-Notch: 50 Hz, Q=30.
-Downsample: 1024→256 Hz (128 samples per 500 ms epoch).
-
-Baseline correction (NEW):
-   Positive epochs: subtract mean of −1500 to −1000 ms window.
-   Negative epochs: subtract mean of first 100 ms of the epoch.
-   Applied AFTER filtering, BEFORE z-scoring.
-
-Artifact rejection (FIXED):
-   Threshold: ±100 µV. Now returns aligned (X, y) arrays with assertion.
-   Previous code returned X and mask but callers never sliced y.
-
-Z-score normalisation (FIXED — no leakage):
-   zscore_normalize() now accepts fit_stats argument.
-   Statistics fit on TRAINING fold only, applied to val/test.
-   The synthetic generator no longer pre-normalises across all trials.
+Leakage control:
+  - No normalization on the full dataset.
+  - Block-wise CV prevents session drift leakage.
 
 5. MODELING
 ================================================================================
 
-Models (final selection):
+Primary model:
+   - EEGNet (compact CNN, ~1.2k params). Single-logit BCE.
 
-  EEGNet (~1,233 params)  [PRIMARY]
-    - Depthwise separable convolutions
-    - Single logit output → BCEWithLogitsLoss
-    - Designed for EEG, works well with small data (4 ch, ~500 trials)
+Baselines:
+   - Riemannian + Logistic Regression (strong classical baseline).
+   - ShallowConvNet (band-power baseline).
 
-  EEGNetWithAttention (~1,425 params)  [OPTIONAL ENHANCEMENT]
-    - EEGNet backbone + lightweight temporal self-attention
-    - Attention over T' time-steps after separable conv (embed_dim=16)
-    - ~192 extra params, no overfitting risk
-    - Interview answer: 'lightweight attention over CNN features avoids
-      full-Transformer overfitting in this low-channel, low-data regime'
+Optional enhancement:
+   - EEGNetWithAttention (lightweight temporal attention; no full Transformer).
 
-  Riemannian + Logistic Regression  [STRONG BASELINE]
-    - Covariance(OAS) → TangentSpace → LogReg(C=1.0)
-    - Uses pyriemann library
-    - Consistently the hardest-to-beat baseline on low-channel BCI
-    - Shows you understand classical methods, not just deep learning
-
-    If the deep learning model does not outperform the Riemannian baseline, it indicates potential overfitting or insufficient data, as Riemannian methods are known to be strong in low-channel EEG settings.
-
-  ShallowConvNet (~7,561 params)  [SECONDARY BASELINE]
-    - log(AvgPool(x²)) band-power features
-    - Single logit output → BCEWithLogitsLoss
-    - Good sanity check for band-power discriminability
-
-  EEG-Conformer (DEMOTED to conformer_experimental.py)  [DO NOT USE AS PRIMARY]
-    - ~60,000 params with ~500 trials and 4 channels = severe overfitting
-    - No spatial structure for self-attention to exploit
-    - Interview answer embedded in file docstring
-
-    Full Transformer-based architectures were considered but rejected as primary models due to the low-channel (2–4 electrodes) and low-data regime (~500 trials per subject), where self-attention lacks meaningful spatial structure and tends to overfit.
+Not used as primary:
+   - EEG-Conformer (experimental; high overfitting risk with 2–4 channels).
 
 6. TRAINING & LOSS
 ================================================================================
 
-Loss (CHANGED from CrossEntropyLoss):
-   BCEWithLogitsLoss with manual label smoothing ε=0.05
-   y_smooth = y * (1 - 2*eps) + eps
-   loss = BCE(σ(logit), y_smooth)
+Loss:
+  - BCEWithLogitsLoss with label smoothing (eps = 0.05).
 
-   Previous ε=0.1 was too aggressive for binary classification.
-   Previous 2-logit + CrossEntropy was unnecessarily complex.
+Augmentation (training only):
+  - Time shift (±50 ms) for synthetic data.
+  - Channel dropout (10%).
+  - Mixup (alpha 0.2) in training loop.
+  - Real EEG uses mild Gaussian noise instead of circular shift.
 
-Augmentation (CHANGED — all online in Dataset.__getitem__):
-   1. Time-shift: ±13 samples (±50 ms) — was ±3 (±12 ms), useless
-   2. Mixup (α=0.2): x_mix = λ·x_i + (1-λ)·x_j
-   3. Channel dropout (10%): zero entire channels per sample
-   4. Gaussian noise injection: REMOVED (not adding value)
+Splits:
+  - Within-subject: block-wise k-fold CV (blocks from sessions).
+  - Cross-subject: LOSO (leave-one-subject-out).
 
-   Previous augmentation was applied BEFORE train/val split = leakage.
-   Now augmentation is online during training only.
-
-CV Strategy (CHANGED):
-   Within-subject: Block-wise 4-fold (hold out session blocks, not trials).
-      Previous StratifiedKFold over trials allowed adjacent trials in
-      different folds — model learns session drift, not BP.
-   Cross-subject: Leave-One-Subject-Out (unchanged).
-
-Optimiser: AdamW (lr=1e-3, wd=1e-4), CosineAnnealingLR, early stopping
-   (patience=15), gradient clipping (max_norm=1.0).
+Leakage avoidance:
+  - Z-score stats fit on training folds only.
+  - No trial-level mixing across blocks.
 
 
-The reported accuracy may appear modest compared to general EEG classification tasks; however, this is expected due to the strict constraints of the problem: only 2–4 electrodes, a short −500 ms pre-speech window, and the low signal-to-noise ratio of the Bereitschaftspotential. Therefore, we prioritise realistic evaluation (block-wise CV and LOSO) over inflated performance.
+7. EXPECTED PERFORMANCE (REALISTIC)
+================================================================================
 
-We deliberately avoid reporting inflated accuracy (>90%), as such results typically indicate data leakage, EMG contamination, or improper validation in EEG pipelines.
+Accuracy is modest by design due to: 2–4 electrodes, a 500 ms pre-speech
+window, and low SNR of the Bereitschaftspotential.
 
-  Scenario                              | Bal. Acc   | AUC-ROC
-  --------------------------------------|------------|--------
-  Within-subject, EEGNet, 4 ch          | 0.72–0.78  | 0.78–0.83
-  Within-subject, 2 ch (FCz+C3)         | 0.65–0.72  | 0.70–0.77
-  Cross-subject (LOSO), no fine-tune     | 0.58–0.64  | 0.62–0.68
-  Cross-subject + 30-trial calibration   | 0.64–0.70  | 0.69–0.74
+Typical expectations (from current notebook runs and low-channel EEG literature):
+   - Within-subject, EEGNet (4 ch): 0.50–0.60 balanced accuracy
+   - Cross-subject (LOSO): 0.48–0.56 balanced accuracy
+   - With 30-trial fine-tune: +2–4 pp improvement
+
+If within-subject AUC > 0.90 on real data, audit for leakage:
+   1. Epoch ends strictly at speech onset
+   2. EMG leakage
+   3. Cue-evoked visual potentials
+   4. Z-score fit on full dataset
+
+   Scenario                              | Bal. Acc   | AUC-ROC
+   --------------------------------------|------------|--------
+   Within-subject, EEGNet, 4 ch          | 0.50–0.60  | 0.55–0.62
+   Within-subject, 2 ch (FCz+C3)         | 0.45–0.55  | 0.50–0.58
+   Cross-subject (LOSO), no fine-tune     | 0.48–0.56  | 0.52–0.60
+   Cross-subject + 30-trial calibration   | 0.50–0.58  | 0.54–0.62
 
 LEAKAGE AUDIT: If within-subject AUC > 0.90 on REAL data, investigate:
    1. Auditory cortex contamination — epoch must end strictly at t_onset
@@ -178,74 +161,25 @@ data circularity, not real performance.  The notebook prints a warning.
 8. LIMITATIONS
 ================================================================================
 
-Limitations:
-* EEG signals have low signal-to-noise ratio
-* Bereitschaftspotential is subtle and varies across subjects
-* Only 500 ms pre-speech window limits available information
-* Cross-subject generalisation is inherently difficult
-* Requires small calibration (20–30 trials) for deployment
+- Low SNR EEG signals and subject variability
+- Short 500 ms pre-speech window
+- Cross-subject generalization is hard without calibration
+- Only 2–4 electrodes limit spatial information
 
-9. EXTRA EDGE ANALYSES
+9. EXTRA EVALUATIONS
 ================================================================================
 
-  Channel Ablation Study (Section 8 in notebook):
-    Tests all 11 combinations of 2–4 channels (C(4,2)+C(4,3)+C(4,4)).
-    Uses Riemannian+LogReg baseline for speed.
-    Conclusion: 4 channels is optimal; FCz+C3 is the recommended 2-ch fallback.
-    Interview: 'Our ablation quantifies each channel's contribution.'
+- Channel ablation: 11 combos of 2–4 electrodes (Riemannian baseline).
+- Detection latency: evaluate windows ending at −100 to −500 ms.
+- Cross-subject fine-tuning: 30-trial calibration improves LOSO results.
 
-  Detection Latency Analysis (Section 9 in notebook):
-    Evaluates EEGNet accuracy at sub-windows ending at:
-      −100 ms: late BP / NS' — most discriminative (72–78%)
-      −200 ms: mid BP (≈65–70%)
-      −300 ms: early BP onset (≈60–65%)
-      −400/−500 ms: very early BP (≈52–61%)
-    Shows real-world usability; 200 ms lead time is practically viable.
-
-  Cross-Subject Fine-Tuning (Section 10 in notebook):
-    Protocol: LOSO pre-train → freeze CNN → fine-tune classifier head
-    with 30 calibration trials (15 intent + 15 no-intent).
-    Expected gain: +6–8 pp balanced accuracy.
-    Interview: 'Quick 30-trial calibration makes the system deployable.'
-
-10. CODE STRUCTURE
+10. CODE STRUCTURE (ABRIDGED)
 ================================================================================
 
-DETECT-INTENT-TO-SPEAK/
-├── eeg_intent_to_speak.ipynb         Main notebook (10 sections)
-├── architecture_diagram.md           Final architecture diagram [NEW]
-├── patch_notebook.py                 Script that injected Sections 8–10
-├── explanation.txt                    This file
-├── walkthrough.md                    Change log
-├── models/
-│   ├── __init__.py                   Exports EEGNet, EEGNetWithAttention,
-│   │                                  ShallowConvNet, Riemannian
-│   ├── eegnet.py                     EEGNet [PRIMARY] + EEGNetWithAttention [OPT]
-│   ├── shallow_convnet.py            ShallowConvNet [BASELINE]
-│   ├── riemannian_baseline.py        Riemannian+LogReg [STRONG BASELINE]
-│   └── conformer_experimental.py    [DO NOT USE AS PRIMARY]
-├── utils/
-│   ├── __init__.py
-│   ├── preprocessing.py              Filters, baseline, artifacts, loader,
-│   │                                  get_channel_combinations() [NEW]
-│   ├── dataset.py                    EEGDataset, block-CV, LOSO,
-│   │                                  create_finetune_split() [NEW]
-│   └── metrics.py                    Metrics, plots, latency analysis [NEW]
-└── figures/                          Generated plots
-
-11. HOW TO RUN
-================================================================================
-
-  pip install torch numpy scipy scikit-learn matplotlib seaborn wandb pyriemann
-
-  # Synthetic mode (smoke test):
-  jupyter notebook eeg_intent_to_speak.ipynb
-  # → Set DATA_MODE = 'synthetic' in cell 1
-
-  # Real data mode:
-  pip install openneuro-cli mne
-  openneuro-py download --dataset=ds003626 ./data/ds003626
-  # → Set DATA_MODE = 'real', DATA_DIR = './data/ds003626'
+models/                 EEGNet, ShallowConvNet, Riemannian baseline
+utils/preprocessing.py  filters, epoching, loaders
+utils/dataset.py        augmentation, blockwise CV, LOSO
+utils/metrics.py        metrics, latency analysis, plots
 
 ================================================================================
 END OF EXPLANATION

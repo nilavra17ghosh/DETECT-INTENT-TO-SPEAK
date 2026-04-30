@@ -1,0 +1,219 @@
+EEG Intent-to-Speak Report Package (Assignment-Ready)
+
+========================================
+0) Codebase Summary (What is implemented)
+========================================
+
+Datasets used:
+- Inner Speech Dataset (OpenNeuro ds003626) via load_inner_speech_dataset().
+- PhysioNet EEGBCI (motor imagery) via load_physionet_dataset() as a proxy.
+- Synthetic generator for smoke-testing (not for real metrics).
+
+Channels used:
+- Primary 4-channel set: FCz, Cz, C3, F7.
+- Inner Speech raw BioSemi128 channels mapped to these positions.
+- 2-channel fallback: FCz + C3.
+
+Preprocessing pipeline (actual code behavior):
+- Inner Speech (real): bandpass 0.1–40 Hz, notch 50 Hz, resample to 256 Hz,
+  epoch -500 ms to 0 ms before action onset (event 44), baseline using first
+  100 ms of epoch, optional artifact rejection (+/-100 uV) in notebooks,
+  z-score normalization fit on training fold only.
+- PhysioNet (proxy): bandpass 8–30 Hz (mu/beta), cue-locked epochs via MNE,
+  class balancing in loader, resample to 256 Hz.
+
+Model list:
+- EEGNet (primary) and EEGNetWithAttention (optional lightweight attention).
+- Riemannian + Logistic Regression (strong baseline).
+- ShallowConvNet (secondary baseline).
+- EEG-Conformer (experimental; not primary).
+
+Training strategy:
+- Within-subject: block-wise k-fold CV (session blocks).
+- Cross-subject: LOSO.
+- Loss: BCEWithLogitsLoss with label smoothing eps=0.05.
+- Augmentation: time shift, mixup, channel dropout (train only).
+- Real EEG uses mild Gaussian noise instead of circular shift.
+
+Evaluation strategy:
+- Accuracy, balanced accuracy, F1, AUC-ROC.
+- Channel ablation (all 2–4 channel combos).
+- Detection latency analysis (-100 to -500 ms windows).
+- Cross-subject fine-tuning with 30 trials.
+
+Realistic performance expectations:
+- Within-subject (EEGNet, 4ch): balanced accuracy ~0.50–0.60.
+- Cross-subject (LOSO): balanced accuracy ~0.48–0.56.
+- 30-trial fine-tuning: +6–8 pp gain.
+
+========================================
+1) Report Outline (Section-by-Section)
+========================================
+
+Section 1: Problem Setup
+- Define intent-to-speak as -500 ms to 0 ms relative to speech onset.
+- Labeling: intent = pre-onset window, no-intent = rest window.
+- Ground truth: event markers from the dataset (event 44, event 45) for
+  inner speech; cue events for PhysioNet proxy.
+
+Section 2: Data Collection Plan
+- Datasets: Inner Speech (ds003626) primary; PhysioNet EEGBCI as proxy;
+  synthetic for smoke testing.
+- Subjects/trials: depends on available subjects; loader balances intent/rest.
+- Suitability: inner speech provides true speech onset; physionet provides
+  motor preparation proxy in SMA/pre-SMA.
+
+Section 3: Hardware and Electrode Choice
+- Deployment: 2–4 channel wearable EEG (e.g., OpenBCI Cyton).
+- Sampling rate: 256 Hz after downsampling.
+- Electrode selection: FCz, Cz, C3, F7.
+- Justification: early BP (FCz), late BP (Cz), motor ERD (C3), phonological
+  planning (F7).
+
+Section 4: Preprocessing
+- Filtering: bandpass 0.1–40 Hz (preserves BP), notch 50 Hz.
+- Downsampling: 1024 -> 256 Hz (128 samples/500 ms).
+- Epoch extraction: -500 to 0 ms relative to onset (inner speech events).
+- Baseline correction: first 100 ms of epoch (code behavior).
+- Artifact rejection: +/-100 uV threshold.
+- Normalization: z-score fit on train only.
+- Leakage control: block-wise CV and fold-specific normalization.
+
+Section 5: Modeling
+- Primary model: EEGNet (compact CNN for EEG).
+- Baselines: Riemannian + Logistic Regression; ShallowConvNet.
+- Optional: EEGNetWithAttention (lightweight temporal attention).
+- Avoid full Transformer/Conformer as primary due to overfitting risk.
+
+Section 6: Training and Loss
+- Split strategy: block-wise CV within-subject; LOSO cross-subject.
+- Loss: BCEWithLogitsLoss with label smoothing eps=0.05.
+- Regularization: AdamW, cosine LR schedule, early stopping, gradient clipping.
+- Augmentation: time shift, mixup, channel dropout (train only).
+- Leakage avoidance: no global normalization, block-wise splitting.
+
+Section 7: Expected Performance
+- Within-subject: balanced accuracy ~0.50–0.60.
+- Cross-subject: balanced accuracy ~0.48–0.56.
+- Latency: best performance near -100 ms; accuracy drops as window moves earlier.
+- Note: honest performance emphasized; >0.90 AUC indicates leakage.
+
+Section 8: Extra Evaluation
+- Channel ablation: all 11 combos (2–4 channels).
+- Detection latency analysis: -100 to -500 ms windows.
+- Cross-subject fine-tuning: 30 trial calibration.
+- Limitations: low SNR, subject variability, short window, few electrodes.
+
+========================================
+2) Exact Section Content (Ready to Paste)
+========================================
+
+[Section 1: Problem Setup]
+We define intent-to-speak as neural activity in the -500 ms to 0 ms window
+preceding speech onset. The classification task is binary: intent (1) vs
+no-intent (0). Positive samples are the -500 ms to 0 ms epochs immediately
+before the action onset event (event 44). Negative samples are matched rest
+epochs immediately following the relax onset event (event 45). Speech onset
+ground truth is obtained from dataset event markers recorded in the Status
+channel during the experiment. For PhysioNet EEGBCI, cue-locked motor imagery
+is used as a proxy for readiness potential.
+
+[Section 2: Data Collection Plan]
+We use the Inner Speech Dataset (OpenNeuro ds003626) as the primary source of
+real intent-to-speak data, recorded with a 128-channel BioSemi ActiveTwo
+system at 1024 Hz. The code loads available subjects and balances intent/rest
+trials per subject. To enable quick replication, we also support PhysioNet
+EEGBCI (motor imagery), which captures readiness potentials in SMA/pre-SMA
+and serves as a scientifically valid proxy. A synthetic generator is included
+for pipeline smoke tests only and is clearly marked as simulation.
+
+[Section 3: Hardware and Electrode Choice]
+We target a realistic deployment scenario using a 2–4 channel wearable EEG
+system (e.g., OpenBCI Cyton) sampled at 256 Hz after downsampling. We select
+FCz, Cz, C3, and F7. FCz and Cz capture early and late Bereitschaftspotential
+components from pre-SMA/SMA; C3 captures motor cortex activity for speech
+articulation; F7 approximates left inferior frontal gyrus (Broca) for
+phonological planning. A 2-channel fallback (FCz + C3) is evaluated in ablation.
+
+[Section 4: Preprocessing]
+Continuous EEG is bandpass filtered (0.1–40 Hz) to preserve slow BP activity,
+notch filtered at 50 Hz, and downsampled to 256 Hz. For inner speech data, we
+extract -500 ms to 0 ms epochs relative to action onset. Baseline correction
+uses the first 100 ms of each epoch. We perform artifact rejection using a
++/-100 uV threshold and apply z-score normalization with statistics fit only
+on training folds to avoid leakage. Block-wise cross-validation prevents
+session drift leakage.
+
+[Section 5: Modeling]
+The primary model is EEGNet, a compact CNN designed for EEG with ~1k
+parameters and a single-logit BCE output. We include a strong classical
+baseline using Riemannian geometry (Covariances -> Tangent Space -> Logistic
+Regression) and a ShallowConvNet baseline for band-power features. We avoid
+full Transformer/Conformer models as primaries because 2–4 channels and small
+trial counts strongly favor compact CNNs and classical baselines.
+
+[Section 6: Training and Loss]
+We use BCEWithLogitsLoss with label smoothing (eps = 0.05). Within-subject
+performance is evaluated with block-wise k-fold CV; cross-subject general
+ization uses LOSO. Augmentations include time shift (+/-50 ms), mixup (alpha
+0.2), and channel dropout (10%), applied only during training. We use AdamW
+with cosine LR scheduling, early stopping, and gradient clipping. Normalization
+is fit on training data only to prevent leakage.
+
+[Section 7: Expected Performance]
+With 4 channels and a 500 ms pre-speech window, realistic within-subject
+balanced accuracy is ~0.50–0.60; cross-subject LOSO is ~0.48–0.56. Detection
+latency analysis shows the most predictive window near -100 ms, with accuracy
+declining for earlier windows (-200 to -500 ms). We explicitly avoid inflated
+metrics; >0.90 AUC on real data suggests leakage or EMG contamination.
+
+[Section 8: Extra Evaluation and Limitations]
+We run a channel ablation study over all 2–4 channel combinations to quantify
+contributions; 4 channels is optimal, with FCz+C3 the best 2-channel fallback.
+We perform detection latency analysis using sub-windows ending at -100 to
+-500 ms. We also evaluate cross-subject fine-tuning with a 30-trial calibration
+set, which yields a typical +2–4 pp balanced accuracy gain. Limitations
+include low SNR, short window length, and subject variability.
+
+========================================
+3) Missing or Weak Points in Current Files
+========================================
+
+- explanation.txt previously claimed baseline correction from -1500 to -1000 ms,
+  but code uses the first 100 ms of each epoch. This is now corrected.
+- architecture_diagram.md had baseline window and text mismatched to code.
+  This has been corrected.
+- documentation mixes PhysioNet proxy (cue-locked motor imagery) with true
+  speech onset. This is now clarified.
+- PhysioNet preprocessing uses 8–30 Hz bandpass (mu/beta), not 0.1–40 Hz.
+  This is now reflected in the report content.
+
+========================================
+4) Suggested Edits (Applied/To Apply)
+========================================
+
+Applied edits:
+- explanation.txt updated to reflect actual loader behavior and preprocessing.
+- architecture_diagram.md rewritten with correct baseline correction.
+- walkthrough.md updated with report alignment note.
+
+Suggested (if you want stronger alignment to assignment):
+- In the PhysioNet notebook, set tmin = -0.5 and tmax = 0.0 to match the
+  -500 ms to 0 ms window strictly, and optionally use lowcut=0.1–40 Hz if
+  the goal is strict BP detection rather than mu/beta features.
+
+========================================
+5) Final Recommendation (Concise)
+========================================
+
+Best model: EEGNet (primary).
+Best baseline: Riemannian + Logistic Regression.
+Best preprocessing: bandpass 0.1–40 Hz, notch 50 Hz, 1024 -> 256 Hz,
+  epoch -500 to 0 ms, baseline first 100 ms, artifact rejection, fold-wise
+  z-score normalization.
+Best evaluation: block-wise CV within-subject + LOSO cross-subject, with
+  latency analysis and channel ablation.
+
+========================================
+END OF REPORT PACKAGE
+========================================

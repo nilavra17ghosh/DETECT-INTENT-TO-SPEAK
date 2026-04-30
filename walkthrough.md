@@ -1,5 +1,12 @@
 # EEG Intent-to-Speak — Change Walkthrough
 
+## 2026-04-30 — Report Alignment Pass
+
+- Updated explanation.txt to reflect actual code behavior (baseline correction, loaders, datasets).
+- Rewrote architecture_diagram.md with current preprocessing and model choices.
+- Prepared report outline content (see report_submission.txt).
+- Flagged documentation mismatches: PhysioNet proxy window vs. assignment window.
+
 ## Original Changes (All 8 Priorities)
 
 ### P1 — Data: Real loader + hardened synthetic
@@ -17,7 +24,7 @@
 |--------|---------------|
 | Bandpass low cutoff | 0.5 Hz → **0.1 Hz** (preserves sub-1 Hz BP) |
 | Bandpass high cutoff | 45 Hz → **40 Hz** |
-| Baseline correction | None → **−1500 to −1000 ms** for positives, first 100 ms for negatives |
+| Baseline correction | None → **first 100 ms of epoch** for both classes (code behavior) |
 | Artifact rejection | Returned (X, mask) → **returns (X, y, mask)** with assertion |
 
 ### P3 — Channels
@@ -42,7 +49,7 @@
 | Before | After |
 |--------|-------|
 | ±3 sample shift (±12 ms) | **±13 samples (±50 ms)** |
-| Gaussian noise | **Deleted** |
+| Gaussian noise | **Used for real EEG only** (mild noise instead of circular shift) |
 | — | **Mixup** (α=0.2) in training loop |
 | — | **Channel dropout** (10%) via `ChannelDropout` nn.Module |
 
