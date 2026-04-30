@@ -1,0 +1,12 @@
+torch
+numpy
+scipy
+scikit-learn
+matplotlib
+seaborn
+wandb
+pyriemann
+mne
+openneuro-py
+notebook
+python-dotenv
